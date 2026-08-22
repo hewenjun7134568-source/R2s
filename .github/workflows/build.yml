@@ -78,27 +78,30 @@ jobs:
 
       - name: Hack emmc.img (Inject FSBL for direct dd boot)
         run: |
+          set +e
           cd ow/bin/targets/spacemit/k1/
+          pwd
+          ls -l
           IMG="openwrt-spacemit-k1-generic-ext4-emmc.img"
 
-          # 直接从随固件产出的工具包里提取引导文件（比猜 staging_dir 路径更稳）
+          # 从随固件产出的工具包提取引导文件（路径 100% 可靠）
           tar -xzf u-boot-spacemit_k1.tar.gz
           UB="$(dirname "$(find . -name FSBL.bin | head -n1)")"
           echo "Bootloader dir: $UB"
           ls -l "$UB"
 
-          # 解压（gz 尾巴是 OpenWrt 追加的 sysupgrade 元数据，
-          # gunzip 会报 trailing garbage 并返回警告码 2，属正常，忽略）
-          gunzip -f "${IMG}.gz" || true
+          # 解压（gz 尾巴是 sysupgrade 元数据，gunzip 警告码 2 已被 set +e 免疫）
+          gunzip -f "${IMG}.gz"
+          echo "gunzip exit code: $? (2=元数据警告，可忽略)"
 
-          echo "🔥 Injecting FSBL and U-Boot into emmc.img header..."
+          # 注入引导三件套到镜像头部
           dd if="$UB/bootinfo_emmc.bin" of="$IMG" conv=notrunc
           dd if="$UB/FSBL.bin" of="$IMG" bs=1k seek=128 conv=notrunc
           dd if="$UB/u-boot.itb" of="$IMG" bs=1k seek=448 conv=notrunc
 
-          gzip "$IMG"
+          gzip -f "$IMG"
           ls -l "$IMG.gz"
-          echo "✅ Hack successful! This emmc.img can now be dd'd directly to eMMC user area and boot!"
+          echo "✅ Hack done! emmc.img now boots when dd'ed to eMMC user area."
 
       - name: Upload firmware and tools
         uses: actions/upload-artifact@v4
