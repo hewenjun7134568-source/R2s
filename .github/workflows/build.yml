@@ -1,4 +1,4 @@
-name: Build OpenWrt R2S (ext4 + eBPF + Direct Boot Hack)
+name: Build OpenWrt R2S Ultimate
 
 on:
   workflow_dispatch:
@@ -49,21 +49,32 @@ jobs:
           [ $ok -eq 1 ]
           ./scripts/feeds install -a
 
-      - name: Config (ext4 + eBPF)
+      - name: Config (ext4 + eBPF + Network Optimizations)
         run: |
           cd ow
+          # 基础 Target
           echo "CONFIG_TARGET_spacemit=y" > .config
           echo "CONFIG_TARGET_spacemit_k1=y" >> .config
           echo "CONFIG_TARGET_spacemit_k1_DEVICE_generic=y" >> .config
           echo "CONFIG_PACKAGE_luci=y" >> .config
+          
+          # 强制 ext4 文件系统
           echo "CONFIG_TARGET_ROOTFS_EXT4FS=y" >> .config
           echo "# CONFIG_TARGET_ROOTFS_EROFS is not set" >> .config
+          
+          # eBPF 核心支持
           echo "CONFIG_BPF_SYSCALL=y" >> .config
           echo "CONFIG_BPF_JIT=y" >> .config
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
           echo "CONFIG_HAVE_EBPF_JIT=y" >> .config
           echo "CONFIG_DEBUG_INFO_BTF=y" >> .config
           echo "CONFIG_PACKAGE_bpftool=y" >> .config
+          
+          # 教程推荐的网络优化包 (直接编译进固件，避免在线安装内核版本不匹配)
+          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
+          echo "CONFIG_PACKAGE_irqbalance=y" >> .config
+          echo "CONFIG_PACKAGE_ethtool=y" >> .config
+          
           make defconfig
 
       - name: Download
@@ -80,28 +91,26 @@ jobs:
         run: |
           set +e
           cd ow/bin/targets/spacemit/k1/
-          pwd
-          ls -l
           IMG="openwrt-spacemit-k1-generic-ext4-emmc.img"
 
-          # 从随固件产出的工具包提取引导文件（路径 100% 可靠）
+          # 从随固件产出的工具包提取引导文件
           tar -xzf u-boot-spacemit_k1.tar.gz
           UB="$(dirname "$(find . -name FSBL.bin | head -n1)")"
           echo "Bootloader dir: $UB"
           ls -l "$UB"
 
-          # 解压（gz 尾巴是 sysupgrade 元数据，gunzip 警告码 2 已被 set +e 免疫）
+          # 解压（忽略 trailing garbage 警告）
           gunzip -f "${IMG}.gz"
-          echo "gunzip exit code: $? (2=元数据警告，可忽略)"
 
           # 注入引导三件套到镜像头部
           dd if="$UB/bootinfo_emmc.bin" of="$IMG" conv=notrunc
           dd if="$UB/FSBL.bin" of="$IMG" bs=1k seek=128 conv=notrunc
           dd if="$UB/u-boot.itb" of="$IMG" bs=1k seek=448 conv=notrunc
 
+          # 重新压缩
           gzip -f "$IMG"
           ls -l "$IMG.gz"
-          echo "✅ Hack done! emmc.img now boots when dd'ed to eMMC user area."
+          echo "✅ Hack done! emmc.img now boots when dd'ed directly."
 
       - name: Upload firmware and tools
         uses: actions/upload-artifact@v4
