@@ -1,12 +1,7 @@
-name: Build OpenWrt R2S Ultimate
+name: Build OpenWrt R2S (Linux 7.0 experiment)
 
 on:
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number'
-        required: false
-        default: '23231'
 
 jobs:
   build:
@@ -25,13 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk gettext git libncurses5-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget libelf-dev
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gettext git libncurses5-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget libelf-dev jq
 
       - name: Clone OpenWrt and checkout PR
         run: |
           git clone --depth 1 https://github.com/openwrt/openwrt.git ow
           cd ow
-          git fetch --depth 1 origin pull/${{ github.event.inputs.pr_number }}/head:pr
+          git fetch --depth 1 origin pull/23231/head:pr
           git checkout pr
 
       - name: Feeds (GitHub mirror + retry)
@@ -49,32 +44,50 @@ jobs:
           [ $ok -eq 1 ]
           ./scripts/feeds install -a
 
-      - name: Config (ext4 + eBPF + Network Optimizations)
+      - name: Prepare kernel 7.0 (stable or rc, auto hash)
         run: |
           cd ow
-          # 基础 Target
+          KURL=https://cdn.kernel.org/pub/linux/kernel/v7.x
+          if curl -fsSI $KURL/linux-7.0.tar.xz >/dev/null 2>&1; then
+            echo "✅ linux-7.0 stable 已发布"
+            if [ ! -f include/kernel-7.0 ]; then
+              HASH=$(curl -fsSL $KURL/linux-7.0.tar.xz | sha256sum | awk '{print $1}')
+              printf 'LINUX_VERSION-7.0 = 7.0\nLINUX_HASH-7.0 = %s\n' "$HASH" > include/kernel-7.0
+            fi
+          else
+            echo "⚠️ stable 未发布，尝试最新 7.0-rc"
+            RC=$(curl -fsS https://www.kernel.org/releases.json | jq -r '.releases[] | select(.version | test("^7\\.0-rc")) | .version' | head -n1)
+            [ -n "$RC" ] || { echo "❌ 连 7.0-rc 都没有，等内核发布吧"; exit 1; }
+            HASH=$(curl -fsSL $KURL/testing/linux-$RC.tar.xz | sha256sum | awk '{print $1}')
+            printf 'LINUX_VERSION-7.0 = %s\nLINUX_HASH-7.0 = %s\n' "$RC" "$HASH" > include/kernel-7.0
+          fi
+          cat include/kernel-7.0
+
+      - name: Switch spacemit target to 7.0 (curated patches)
+        run: |
+          cd ow
+          sed -i 's/KERNEL_PATCHVER:=6.18/KERNEL_PATCHVER:=7.0/' target/linux/spacemit/Makefile
+          cp target/linux/spacemit/config-6.18 target/linux/spacemit/config-7.0
+          # 只保留“板级/本地”补丁，已进上游的回迁补丁全部丢弃
+          mkdir -p target/linux/spacemit/patches-7.0
+          for p in 0009 0020 0021 0058 0084 0085 0112 0121 0122 0123 0127 0132 0137; do
+            cp target/linux/spacemit/patches-6.18/${p}-* target/linux/spacemit/patches-7.0/ 2>/dev/null || true
+          done
+          echo "📦 7.0 补丁清单："
+          ls target/linux/spacemit/patches-7.0/
+
+      - name: Config (ext4 + eBPF)
+        run: |
+          cd ow
           echo "CONFIG_TARGET_spacemit=y" > .config
           echo "CONFIG_TARGET_spacemit_k1=y" >> .config
           echo "CONFIG_TARGET_spacemit_k1_DEVICE_generic=y" >> .config
           echo "CONFIG_PACKAGE_luci=y" >> .config
-          
-          # 强制 ext4 文件系统
           echo "CONFIG_TARGET_ROOTFS_EXT4FS=y" >> .config
           echo "# CONFIG_TARGET_ROOTFS_EROFS is not set" >> .config
-          
-          # eBPF 核心支持
           echo "CONFIG_BPF_SYSCALL=y" >> .config
           echo "CONFIG_BPF_JIT=y" >> .config
-          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
-          echo "CONFIG_HAVE_EBPF_JIT=y" >> .config
           echo "CONFIG_DEBUG_INFO_BTF=y" >> .config
-          echo "CONFIG_PACKAGE_bpftool=y" >> .config
-          
-          # 教程推荐的网络优化包 (直接编译进固件，避免在线安装内核版本不匹配)
-          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
-          echo "CONFIG_PACKAGE_irqbalance=y" >> .config
-          echo "CONFIG_PACKAGE_ethtool=y" >> .config
-          
           make defconfig
 
       - name: Download
@@ -87,38 +100,13 @@ jobs:
           cd ow
           make -j4 V=s
 
-      - name: Hack emmc.img (Inject FSBL for direct dd boot)
-        run: |
-          set +e
-          cd ow/bin/targets/spacemit/k1/
-          IMG="openwrt-spacemit-k1-generic-ext4-emmc.img"
-
-          # 从随固件产出的工具包提取引导文件
-          tar -xzf u-boot-spacemit_k1.tar.gz
-          UB="$(dirname "$(find . -name FSBL.bin | head -n1)")"
-          echo "Bootloader dir: $UB"
-          ls -l "$UB"
-
-          # 解压（忽略 trailing garbage 警告）
-          gunzip -f "${IMG}.gz"
-
-          # 注入引导三件套到镜像头部
-          dd if="$UB/bootinfo_emmc.bin" of="$IMG" conv=notrunc
-          dd if="$UB/FSBL.bin" of="$IMG" bs=1k seek=128 conv=notrunc
-          dd if="$UB/u-boot.itb" of="$IMG" bs=1k seek=448 conv=notrunc
-
-          # 重新压缩
-          gzip -f "$IMG"
-          ls -l "$IMG.gz"
-          echo "✅ Hack done! emmc.img now boots when dd'ed directly."
-
-      - name: Upload firmware and tools
+      - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-r2s-ultimate
+          name: r2s-linux7.0-exp
           path: |
             ow/bin/targets/spacemit/k1/*sdcard.img.gz
             ow/bin/targets/spacemit/k1/*emmc.img.gz
             ow/bin/targets/spacemit/k1/*initramfs.itb
             ow/bin/targets/spacemit/k1/u-boot-spacemit_k1.tar.gz
-          retention-days: 7
+          retention-days: 3
