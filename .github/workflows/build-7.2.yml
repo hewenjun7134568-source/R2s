@@ -1,4 +1,4 @@
-name: Build OpenWrt R2S (Linux 7.2 Stable - v3)
+name: Build OpenWrt R2S (Linux 7.2 Stable - v4)
 
 on:
   workflow_dispatch:
@@ -44,28 +44,31 @@ jobs:
           [ $ok -eq 1 ]
           ./scripts/feeds install -a
 
-      - name: Inject Kernel 7.2 Support
+      - name: Inject Kernel 7.2 Support (补全 generic config)
         run: |
           cd ow
           cat > include/kernel-7.2 <<EOF
           LINUX_VERSION-7.2 = 7.2
           LINUX_HASH-7.2 = f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3
           EOF
+          # ✅ 关键修复：新内核版本必须有 generic 配置基线，否则 target 会从 Kconfig 消失
+          cp target/linux/generic/config-6.18 target/linux/generic/config-7.2
           sed -i 's/KERNEL_PATCHVER:=6.18/KERNEL_PATCHVER:=7.2/' target/linux/spacemit/Makefile
           cp target/linux/spacemit/config-6.18 target/linux/spacemit/config-7.2
           mkdir -p target/linux/spacemit/patches-7.2
           ( cd target/linux/spacemit/patches-6.18 && ls | grep -iE 'r2s|cpu-scaling|opp' | while read f; do cp "$f" ../patches-7.2/; done )
+          echo "📦 generic config 检查："
+          ls target/linux/generic/ | grep config-
           echo "📦 patches-7.2 清单："
           ls target/linux/spacemit/patches-7.2/
 
-      - name: Config (erofs 原始默认 + 防呆自检)
+      - name: Config (erofs + 防呆自检)
         run: |
           cd ow
           echo "CONFIG_TARGET_spacemit=y" > .config
           echo "CONFIG_TARGET_spacemit_k1=y" >> .config
           echo "CONFIG_TARGET_spacemit_k1_DEVICE_generic=y" >> .config
           echo "CONFIG_PACKAGE_luci=y" >> .config
-          # ✅ 关键修复：显式启用 PR 作者的原始默认文件系统 erofs
           echo "CONFIG_TARGET_ROOTFS_EROFS=y" >> .config
           make defconfig
           echo "🔎 自检："
@@ -91,7 +94,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: r2s-linux7.2-v3
+          name: r2s-linux7.2-v4
           path: |
             ow/bin/targets/spacemit/k1/*sdcard.img.gz
             ow/bin/targets/spacemit/k1/*emmc.img.gz
