@@ -1,4 +1,4 @@
-name: Debug 7.2 metadata
+name: Debug 7.2 dump (final)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
           git fetch --depth 1 origin pull/23231/head:pr
           git checkout pr
 
-      - name: Inject 7.2 (same as v4)
+      - name: Inject 7.2
         run: |
           cd ow
           cat > include/kernel-7.2 <<EOF
@@ -22,19 +22,19 @@ jobs:
           LINUX_HASH-7.2 = f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3
           EOF
           cp target/linux/generic/config-6.18 target/linux/generic/config-7.2
-          echo "=== 0. KERNEL_PATCHVER 定义在哪 ==="
-          grep -rn "KERNEL_PATCHVER" target/linux/spacemit/ || true
-          sed -i 's/KERNEL_PATCHVER:=6.18/KERNEL_PATCHVER:=7.2/' target/linux/spacemit/Makefile target/linux/spacemit/k1/target.mk 2>/dev/null || true
+          sed -i 's/KERNEL_PATCHVER:=6.18/KERNEL_PATCHVER:=7.2/' target/linux/spacemit/Makefile
           cp target/linux/spacemit/config-6.18 target/linux/spacemit/config-7.2
 
-      - name: A+B metadata chain
+      - name: Run the EXACT dump metadata.pl uses (stderr visible)
         run: |
           cd ow
-          echo "=== A. target raw dump ==="
-          make -C target/linux/spacemit dump V=s 2>&1 | tail -40 || true
-          echo "=== B. kconfig fragment ==="
-          ./scripts/metadata.pl kconfig 2>&1 | grep -B2 -A6 -i spacemit | head -80 || true
-
+          make -C target/linux dump > /tmp/dump.txt 2> /tmp/dumperr.txt || true
+          echo "--- 成功 dump 的 target 列表 ---"
+          grep "^Target: " /tmp/dump.txt | head -40
+          echo "--- stderr 前 60 行（错误现形）---"
+          head -60 /tmp/dumperr.txt
+          echo "--- stderr 里的 spacemit 上下文 ---"
+          grep -B5 -A10 -i spacemit /tmp/dumperr.txt | head -80
       - name: C+D defconfig probe
         run: |
           cd ow
